@@ -50,42 +50,42 @@ jobs:
   static_code_analysis:
     runs-on: ubuntu-latest
 
-    steps:
-      - name: Checkout Source Code
-        uses: actions/checkout@v4
+  steps:
+    - name: Checkout Source Code
+      uses: actions/checkout@v4
 
-      - name: Setup Go 1.22
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-          cache: true
+    - name: Setup Go 1.22
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.22'
+        cache: true
 
-      - name: Download Go Dependencies
-        run: go mod download
+    - name: Download Go Dependencies
+      run: go mod download
 
-      - name: Install golangci-lint
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
-          | sh -s -- -b /usr/local/bin latest
+    - name: Install golangci-lint
+      uses: golangci/golangci-lint-action@v6
+      with:
+        version: v1.59.1
+        args: --timeout=5m
 
-      - name: Run golangci-lint and Generate SARIF Report
-        run: |
-          set -e
-          golangci-lint run ./... \
-            --timeout=5m \
-            --out-format sarif \
-            > golangci-lint.sarif
+    - name: Generate SARIF Report
+      run: |
+        golangci-lint run ./... \
+          --timeout=5m \
+          --out-format sarif \
+          > golangci-lint.sarif
 
-      - name: Upload SARIF Report to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: golangci-lint.sarif
+    - name: Upload SARIF Report to GitHub Security
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: golangci-lint.sarif
 
-      - name: Upload Lint Report Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: golangci-lint-report
-          path: golangci-lint.sarif
+    - name: Upload Lint Report Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: golangci-lint-report
+        path: golangci-lint.sarif
 
   build:
     runs-on: ubuntu-latest
