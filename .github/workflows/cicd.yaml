@@ -1,96 +1,137 @@
-# CICD using GitHub actions
+name: go-web-cicd-workflow
 
-name: CI/CD
-
-# Exclude the workflow to run on changes to the helm chart
 on:
   push:
     branches:
       - main
     paths-ignore:
-      - 'helm/**'
-      - 'k8s/**'
       - 'README.md'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+  IMAGE_TAG: ${{ github.sha }}
 
 jobs:
 
+  unit_test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go 1.22
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Run Unit Tests and Generate Coverage
+        run: |
+          go test -coverprofile=coverage.out ./...
+          go tool cover -html=coverage.out -o coverage.html
+
+      - name: Upload Coverage Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage-report
+          path: coverage.html
+
+  static_code_analysis:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go 1.22
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Install golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
+          | sh -s -- -b /usr/local/bin latest
+
+      - name: Run golangci-lint and Generate SARIF Report
+        run: |
+          golangci-lint run ./... --timeout=5m --out-format sarif > golangci-lint.sarif
+
+      - name: Upload SARIF Report to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: golangci-lint.sarif
+
+      - name: Upload Lint Report Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: golangci-lint-report
+          path: golangci-lint.sarif
+
   build:
     runs-on: ubuntu-latest
+    needs:
+      - unit_test
+      - static_code_analysis
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
 
-    - name: Set up Go 1.22
-      uses: actions/setup-go@v2
-      with:
-        go-version: 1.22
+      - name: Setup Go 1.22
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
 
-    - name: Build
-      run: go build -o go-web-app
+      - name: Build Application
+        run: |
+          mkdir -p dist
+          go build -o dist/go-web-app .
 
-    - name: Test
-      run: go test ./...
-  
-  code-quality:
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-web-app-binary
+          path: dist/go-web-app
+
+  docker:
     runs-on: ubuntu-latest
-
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Run golangci-lint
-      uses: golangci/golangci-lint-action@v6
-      with:
-        version: v1.56.2
-  
-  push:
-    runs-on: ubuntu-latest
-
     needs: build
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout Source
+        uses: actions/checkout@v4
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v1
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::<ACCOUNT_ID>:role/github-ecr-role
+          aws-region: ${{ env.AWS_REGION }}
 
-    - name: Login to DockerHub
-      uses: docker/login-action@v3
-      with:
-        username: ${{ secrets.DOCKERHUB_USERNAME }}
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Build and Push action
-      uses: docker/build-push-action@v6
-      with:
-        context: .
-        file: ./Dockerfile
-        push: true
-        tags: ${{ secrets.DOCKERHUB_USERNAME }}/go-web-app:${{github.run_id}}
+      - name: Build Docker Image
+        run: |
+          docker build -t $ECR_REPOSITORY:${{ github.sha }} .
 
-  update-newtag-in-helm-chart:
-    runs-on: ubuntu-latest
+      - name: Tag Docker Image
+        run: |
+          docker tag $ECR_REPOSITORY:${{ github.sha }} \
+          ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:${{ github.sha }}
 
-    needs: push
+      - name: Push Docker Image to ECR
+        run: |
+          docker push \
+          ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:${{ github.sha }}
 
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        token: ${{ secrets.TOKEN }}
-
-    - name: Update tag in Helm chart
-      run: |
-        sed -i 's/tag: .*/tag: "${{github.run_id}}"/' helm/go-web-app-chart/values.yaml
-
-    - name: Commit and push changes
-      run: |
-        git config --global user.email "abhishek@gmail.com"
-        git config --global user.name "Abhishek Veeramalla"
-        git add helm/go-web-app-chart/values.yaml
-        git commit -m "Update tag in Helm chart"
-        git push
-
-
+      
