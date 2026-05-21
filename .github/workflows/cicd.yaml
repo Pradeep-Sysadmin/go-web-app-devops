@@ -10,6 +10,7 @@ on:
 permissions:
   id-token: write
   contents: read
+  security-events: write
 
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
@@ -31,8 +32,12 @@ jobs:
           go-version: '1.22'
           cache: true
 
+      - name: Download Go Dependencies
+        run: go mod download
+
       - name: Run Unit Tests and Generate Coverage
         run: |
+          set -e
           go test -coverprofile=coverage.out ./...
           go tool cover -html=coverage.out -o coverage.html
 
@@ -55,6 +60,9 @@ jobs:
           go-version: '1.22'
           cache: true
 
+      - name: Download Go Dependencies
+        run: go mod download
+
       - name: Install golangci-lint
         run: |
           curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
@@ -62,7 +70,11 @@ jobs:
 
       - name: Run golangci-lint and Generate SARIF Report
         run: |
-          golangci-lint run ./... --timeout=5m --out-format sarif > golangci-lint.sarif
+          set -e
+          golangci-lint run ./... \
+            --timeout=5m \
+            --out-format sarif \
+            > golangci-lint.sarif
 
       - name: Upload SARIF Report to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
@@ -91,8 +103,12 @@ jobs:
           go-version: '1.22'
           cache: true
 
+      - name: Download Go Dependencies
+        run: go mod download
+
       - name: Build Application
         run: |
+          set -e
           mkdir -p dist
           go build -o dist/go-web-app .
 
@@ -107,13 +123,13 @@ jobs:
     needs: build
 
     steps:
-      - name: Checkout Source
+      - name: Checkout Source Code
         uses: actions/checkout@v4
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::<ACCOUNT_ID>:role/github-ecr-role
+          role-to-assume: arn:aws:iam::123456789012:role/github-ecr-role
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
@@ -122,16 +138,17 @@ jobs:
 
       - name: Build Docker Image
         run: |
-          docker build -t $ECR_REPOSITORY:${{ github.sha }} .
+          set -e
+          docker build -t $ECR_REPOSITORY:$IMAGE_TAG .
 
       - name: Tag Docker Image
         run: |
-          docker tag $ECR_REPOSITORY:${{ github.sha }} \
-          ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:${{ github.sha }}
+          set -e
+          docker tag $ECR_REPOSITORY:$IMAGE_TAG \
+          ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:$IMAGE_TAG
 
       - name: Push Docker Image to ECR
         run: |
+          set -e
           docker push \
-          ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:${{ github.sha }}
-
-      
+          ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:$IMAGE_TAG
